@@ -1,104 +1,97 @@
-# LayoutLMv3 PDF Form Annotator
+# PDF OCR Annotation and Training Tool
 
-A comprehensive application for annotating PDF forms and extracting structured data using Microsoft's LayoutLMv3 model.
+This application allows users to upload PDFs, run OCR on them using Tesseract, annotate text boxes, combine multiple boxes, train a LayoutLMv3 model on the annotations, and run inference on new PDFs.
 
 ## Features
 
-- **PDF Form Annotation**: Easily mark and label form fields in PDF documents
-- **LayoutLMv3 Integration**: Leverage state-of-the-art document understanding AI
-- **Training Interface**: Fine-tune the model on your specific form types
-- **Batch Processing**: Process multiple forms in batch mode
-- **Form Field Extraction**: Automatically extract values from filled PDF forms
+- PDF upload and navigation
+- OCR processing with Tesseract
+- Text box annotation with custom labels
+- Box combination for multi-part text entities
+- LayoutLMv3 model training
+- Inference on new PDFs
 
 ## Installation
 
 ### Prerequisites
 
-- Python 3.7 or higher
-- PyTorch 1.10.0 or higher
-- Tesseract OCR (for text extraction)
+- Python 3.7+ installed
+- Tesseract OCR installed on your system
 
-### Setup
+### Steps
 
-1. Clone the repository:
-
-   ```
-   git clone https://github.com/yourusername/layoutlm-form-annotator.git
-   cd layoutlm-form-annotator
-   ```
-
-2. Install dependencies:
+1. Clone this repository:
 
    ```
-   pip install -e .
+   git clone https://github.com/yourusername/pdf-ocr-annotation-tool.git
+   cd pdf-ocr-annotation-tool
    ```
 
-   Or directly:
+2. Create a virtual environment (recommended):
+
+   ```
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
+
+3. Install the required packages:
 
    ```
    pip install -r requirements.txt
    ```
 
-3. Install Tesseract OCR:
-   - Windows: Download and install from [Tesseract at UB Mannheim](https://github.com/UB-Mannheim/tesseract/wiki)
-   - Linux: `sudo apt install tesseract-ocr`
-   - macOS: `brew install tesseract`
+4. Install Tesseract OCR if not already installed:
+   - On Ubuntu/Debian: `sudo apt-get install tesseract-ocr`
+   - On macOS: `brew install tesseract`
+   - On Windows: Download and install from [Tesseract at UB Mannheim](https://github.com/UB-Mannheim/tesseract/wiki)
 
 ## Usage
 
-### Running the Application
+1. Start the application:
 
-```
-python form_annotator.py
-```
+   ```
+   python main.py
+   ```
 
-Or if installed as a package:
+2. Using the application:
+   - Click "Open PDF" to load a PDF document
+   - Navigate through pages using the arrow buttons
+   - Click "Run OCR" to detect text boxes
+   - Select a box and assign a label using the dropdown
+   - Use "Start Combine" to merge multiple boxes together
+   - Save your annotations using "Save Annotations"
+   - Train the model using "Train Model"
+   - Run inference on new PDFs using "Run Inference"
 
-```
-form-annotator
-```
+## Workflow
 
-### Workflow
+1. **Annotation Phase**:
 
-1. **Load a PDF**: Open a PDF form using the File menu
-2. **Annotate Fields**: Mark form fields by drawing rectangles and labeling them
-3. **Save Annotations**: Save your annotations to reuse later
-4. **Train the Model**: Collect training data and fine-tune the model for your forms
-5. **Extract Data**: Process new filled-in forms to extract field values
+   - Load multiple PDFs
+   - Run OCR on each page
+   - Label the text boxes according to their content type
+   - Combine boxes if needed
+   - Save annotations
 
-## Training Your Own Model
+2. **Training Phase**:
 
-For best results, train the model on your specific form types:
+   - Load your saved annotations
+   - Train the LayoutLMv3 model on your annotated data
 
-1. Annotate fields on multiple examples of your forms
-2. Collect training data by assigning values to each field
-3. Train the model using the Training tab
-4. Save your custom model for future use
+3. **Inference Phase**:
+   - Load a new PDF
+   - Run inference to automatically label text boxes
 
-## Project Structure
+## Customization
 
-```
-layoutlm-form-annotator/
-├── form_annotator.py       # Main application file
-├── setup.py                # Package installation config
-├── requirements.txt        # Dependencies
-├── README.md               # This file
-└── layoutlm_form_model/    # Default model directory (created after training)
-```
+- Add new labels as needed for your document types
+- Adjust model training parameters in the code
 
-## Advanced Features
+## Troubleshooting
 
-- **OCR Preprocessing**: Optimize text extraction for difficult forms
-- **Model Optimization**: Adjust training parameters for specific form types
-- **PDF Preprocessing**: Handle complex form layouts
-- **Batch Export**: Process multiple forms and export results
+- If OCR results are poor, try adjusting the page rendering resolution
+- For memory issues during training, reduce batch size in the training arguments
 
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Acknowledgments
-
-- Microsoft Research for the LayoutLMv3 model
-- HuggingFace for the Transformers library
-- PyMuPDF for PDF processing capabilities
