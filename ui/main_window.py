@@ -238,8 +238,11 @@ class PDFOCRApp(QMainWindow):
         doc = self.documents[self.current_document_idx]
         self.prev_btn.setEnabled(doc.current_page > 0)
         self.next_btn.setEnabled(doc.current_page < doc.get_page_count() - 1)
+        
+        # Always enable OCR button
         self.ocr_btn.setEnabled(True)
         
+        # Always enable prediction button since we use the model's OCR
         self.predict_btn.setEnabled(True)
 
     def update_document_info(self):
@@ -686,11 +689,12 @@ class PDFOCRApp(QMainWindow):
         
         doc = self.documents[self.current_document_idx]
         
-        # Check if there are any boxes on the current page
-        if not doc.page_boxes[doc.current_page]:
-            self.status_label.setText("No text boxes found on current page. Run OCR first.")
-            QMessageBox.warning(self, "No Text Boxes", 
-                              "No text boxes found on current page. Please run OCR first.")
+        # We don't need to check for text boxes anymore since we're using the model's OCR
+        # Just make sure we have a valid page
+        if doc.current_page >= doc.get_page_count():
+            self.status_label.setText("Invalid page number.")
+            QMessageBox.warning(self, "Invalid Page", 
+                            "The current page number is invalid.")
             return
         
         dialog = ModelPredictionDialog(self, doc, doc.current_page)

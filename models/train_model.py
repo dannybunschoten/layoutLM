@@ -28,10 +28,17 @@ class MetricsCallback(TrainerCallback):
             self.metrics_history.append(copy.deepcopy(metrics))
     
     def on_epoch_end(self, args, state, control, **kwargs):
+        print("Epoch completed.")
         # If we're not evaluating every epoch, we still want to track train loss
         if not self.metrics_history or len(self.metrics_history) < state.epoch:
-            metrics = {"train_loss": state.log_history[-1].get("loss", 0)}
-            self.metrics_history.append(metrics)
+            # Check if log_history exists and has entries
+            if hasattr(state, 'log_history') and state.log_history:
+                metrics = {"train_loss": state.log_history[-1].get("loss", 0)}
+                self.metrics_history.append(metrics)
+            else:
+                # Add a placeholder if there's no log_history
+                metrics = {"train_loss": 0.0}
+                self.metrics_history.append(metrics)
 
 
 class ModelTrainer:
