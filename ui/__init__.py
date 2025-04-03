@@ -1,10 +1,5 @@
-"""
-UI package for PDF Information Extractor
-"""
-
-from pdf_info_extractor.ui.app import PDFInfoExtractorApp
-from pdf_info_extractor.ui.annotation_tab import AnnotationTab
-from pdf_info_extractor.ui.training_tab import TrainingTab
-from pdf_info_extractor.ui.inference_tab import InferenceTab
-
-__all__ = ["PDFInfoExtractorApp", "AnnotationTab", "TrainingTab", "InferenceTab"]
+# This file marks models as a package
+# Import key classes to make them available when importing the package
+from models.text_box import TextBox
+from models.document import Document
+from models.train_model import ModelTrainer

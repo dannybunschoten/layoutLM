@@ -1,2 +1,4 @@
-__pycache__
-layoutlm_model
+venv/
+trained_model/
+__pycache__/
+*.py[cod]
