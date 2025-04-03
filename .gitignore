@@ -2,3 +2,4 @@ venv/
 trained_model/
 __pycache__/
 *.py[cod]
+repo.zip

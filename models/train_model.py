@@ -528,14 +528,13 @@ class ModelTrainer:
         
         # Process the image with the processor's OCR
         encoding = self.processor(image, return_tensors="pt")
-        
-        # Extract original word boxes and words for later reference
-        word_boxes = encoding.pop("bbox", None)[0]
-        word_ids = encoding.pop("input_ids", None)[0]
-        
-        # Get predictions from the model
+        # Keep them in the dict
+        word_boxes = encoding["bbox"][0]
+        word_ids = encoding["input_ids"][0]
+
         with torch.no_grad():
-            outputs = self.model(**encoding)
+            outputs = self.model(**encoding)  # Now includes input_ids, bbox, etc.
+
         
         # Get logits and predictions
         logits = outputs.logits
