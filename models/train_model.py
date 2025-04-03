@@ -116,83 +116,158 @@ class ModelTrainer:
         Returns:
             Processed batch
         """
+        # Add detailed debugging
+        print(f"prepare_examples called with {len(examples['image'])} examples")
+        
         images = examples["image"]
         label_dicts = examples["label_dict"]
         
-        # Process each image individually to avoid batching issues
-        processed_examples = []
+        # Process each image individually and store results
+        all_input_ids = []
+        all_attention_masks = []
+        all_bbox = []
+        all_labels = []
+        all_pixel_values = []
         
         for image_idx, (image, label_dict) in enumerate(zip(images, label_dicts)):
             print(f"Processing image {image_idx}")
             
-            # Run processor on this single image
-            encoding = self.processor(image, return_tensors="pt")
-            
-            # Extract word boxes and ids
-            word_boxes = encoding.pop("bbox", None)[0]
-            word_ids = encoding.pop("input_ids", None)[0]
-            attention_mask = encoding.pop("attention_mask", None)[0]
-            
-            # Create labels tensor
-            labels = torch.ones(len(word_ids)) * -100  # Default: ignore for loss calculation
-            
-            # Match boxes to our labeled areas
-            for i, (box, word_id) in enumerate(zip(word_boxes, word_ids)):
-                # Skip special tokens
-                if word_id in self.processor.tokenizer.all_special_ids:
-                    continue
+            try:
+                # Process single image
+                encoding = self.processor(image, return_tensors="pt")
                 
-                # Get coordinates of this token
-                x_min, y_min, x_max, y_max = box.tolist()
+                # Debug output
+                print(f"  Processor output keys: {list(encoding.keys())}")
+                print(f"  Shapes: pixel_values={encoding['pixel_values'].shape}, "
+                    f"input_ids={encoding['input_ids'].shape}, "
+                    f"attention_mask={encoding['attention_mask'].shape}, "
+                    f"bbox={encoding['bbox'].shape}")
                 
-                # Try to match this box to one of our labeled boxes
-                matched_label = "O"  # Default label
+                # Get individual tensors (remove batch dimension)
+                input_ids = encoding["input_ids"][0]
+                attention_mask = encoding["attention_mask"][0]
+                bbox = encoding["bbox"][0]
+                pixel_values = encoding["pixel_values"][0]
                 
-                for box_key, label in label_dict.items():
-                    # Parse the coordinates from the string key
-                    box_coords = box_key.split(',')
-                    box_x1, box_y1, box_x2, box_y2 = map(int, box_coords)
+                # Create labels tensor
+                labels = torch.ones_like(input_ids) * -100  # Default: ignore for loss calculation
+                
+                # Match boxes to our labeled areas
+                for i, (box, word_id) in enumerate(zip(bbox, input_ids)):
+                    # Skip special tokens
+                    if word_id in self.processor.tokenizer.all_special_ids:
+                        continue
                     
-                    # Check for overlap
-                    if (x_min <= box_x2 and x_max >= box_x1 and
-                        y_min <= box_y2 and y_max >= box_y1):
-                        matched_label = label
-                        break
+                    # Get coordinates of this token
+                    x_min, y_min, x_max, y_max = box.tolist()
+                    
+                    # Try to match this box to one of our labeled boxes
+                    matched_label = "O"  # Default label
+                    
+                    for box_key, label in label_dict.items():
+                        # Parse the coordinates from the string key
+                        box_coords = box_key.split(',')
+                        box_x1, box_y1, box_x2, box_y2 = map(int, box_coords)
+                        
+                        # Check for overlap
+                        if (x_min <= box_x2 and x_max >= box_x1 and
+                            y_min <= box_y2 and y_max >= box_y1):
+                            matched_label = label
+                            break
+                    
+                    # Convert label to id
+                    if matched_label in self.label2id:
+                        labels[i] = self.label2id[matched_label]
+                    else:
+                        labels[i] = self.label2id["O"]
                 
-                # Convert label to id
-                if matched_label in self.label2id:
-                    labels[i] = self.label2id[matched_label]
-                else:
-                    labels[i] = self.label2id["O"]
-            
-            # Store processed example
-            processed_examples.append({
-                "pixel_values": encoding["pixel_values"][0],
-                "input_ids": word_ids,
-                "attention_mask": attention_mask,
-                "bbox": word_boxes,
-                "labels": labels
-            })
+                # Store prepared tensors
+                all_input_ids.append(input_ids)
+                all_attention_masks.append(attention_mask)
+                all_bbox.append(bbox)
+                all_labels.append(labels)
+                all_pixel_values.append(pixel_values)
+                
+                print(f"  Successfully processed image {image_idx}, sequence length: {len(input_ids)}")
+                
+            except Exception as e:
+                print(f"Error processing image {image_idx}: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                raise
         
-        # We need to pad everything to the same length
-        max_length = max(len(ex["input_ids"]) for ex in processed_examples)
+        # Debug lengths
+        print(f"Number of processed examples: {len(all_input_ids)}")
+        for i, ids in enumerate(all_input_ids):
+            print(f"Example {i} lengths: input_ids={len(all_input_ids[i])}, "
+                f"attention_mask={len(all_attention_masks[i])}, "
+                f"bbox={len(all_bbox[i])}, labels={len(all_labels[i])}")
         
-        # Create batch with proper padding
-        batch = {
-            "pixel_values": torch.stack([ex["pixel_values"] for ex in processed_examples]),
-            "input_ids": torch.stack([self._pad_tensor(ex["input_ids"], max_length, 
-                                    self.processor.tokenizer.pad_token_id) 
-                                    for ex in processed_examples]),
-            "attention_mask": torch.stack([self._pad_tensor(ex["attention_mask"], max_length, 0) 
-                                        for ex in processed_examples]),
-            "bbox": torch.stack([self._pad_tensor(ex["bbox"], max_length, 
-                            torch.tensor([0, 0, 0, 0])) 
-                            for ex in processed_examples]),
-            "labels": torch.stack([self._pad_tensor(ex["labels"], max_length, -100) 
-                                for ex in processed_examples])
+        # Simple approach - process one image at a time
+        if len(all_input_ids) == 0:
+            print("No examples were processed successfully!")
+            # Return empty batch
+            return {
+                "pixel_values": torch.zeros((0, 3, 224, 224)),
+                "input_ids": torch.zeros((0, 0), dtype=torch.long),
+                "attention_mask": torch.zeros((0, 0), dtype=torch.long),
+                "bbox": torch.zeros((0, 0, 4), dtype=torch.long),
+                "labels": torch.zeros((0, 0), dtype=torch.long)
+            }
+        
+        if len(all_input_ids) == 1:
+            # Only one example - no need for padding
+            return {
+                "pixel_values": all_pixel_values[0].unsqueeze(0),
+                "input_ids": all_input_ids[0].unsqueeze(0),
+                "attention_mask": all_attention_masks[0].unsqueeze(0),
+                "bbox": all_bbox[0].unsqueeze(0),
+                "labels": all_labels[0].unsqueeze(0)
+            }
+        
+        # Pad sequences to the same length for batching
+        max_length = max(len(ids) for ids in all_input_ids)
+        print(f"Max sequence length: {max_length}")
+        
+        # Pad all sequences
+        padded_input_ids = []
+        padded_attention_masks = []
+        padded_bbox = []
+        padded_labels = []
+        
+        for i in range(len(all_input_ids)):
+            padded_input_ids.append(self._pad_sequence(all_input_ids[i], max_length, self.processor.tokenizer.pad_token_id))
+            padded_attention_masks.append(self._pad_sequence(all_attention_masks[i], max_length, 0))
+            padded_bbox.append(self._pad_bbox(all_bbox[i], max_length))
+            padded_labels.append(self._pad_sequence(all_labels[i], max_length, -100))
+        
+        # Create batch dictionary
+        return {
+            "pixel_values": torch.stack(all_pixel_values),
+            "input_ids": torch.stack(padded_input_ids),
+            "attention_mask": torch.stack(padded_attention_masks),
+            "bbox": torch.stack(padded_bbox),
+            "labels": torch.stack(padded_labels)
         }
+
+    def _pad_sequence(self, sequence, length, pad_value):
+        """Pad a 1D sequence to the specified length"""
+        current_length = len(sequence)
+        if current_length >= length:
+            return sequence[:length]
         
-        return batch
+        padding = torch.full((length - current_length,), pad_value, dtype=sequence.dtype)
+        return torch.cat([sequence, padding])
+
+    def _pad_bbox(self, bbox, length):
+        """Pad a 2D bbox tensor to the specified length"""
+        current_length = len(bbox)
+        if current_length >= length:
+            return bbox[:length]
+        
+        padding_shape = (length - current_length, 4)
+        padding = torch.zeros(padding_shape, dtype=bbox.dtype)
+        return torch.cat([bbox, padding])
 
     def _pad_tensor(self, tensor, target_length, padding_value):
         """
