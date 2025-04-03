@@ -1,27 +1,41 @@
 import os
 import numpy as np
 import torch
+import time
+import json
+import copy
 from PIL import Image
 from transformers import (
     AutoProcessor,
     AutoModelForTokenClassification,
     TrainingArguments,
     Trainer,
-    default_data_collator
+    default_data_collator,
+    TrainerCallback
 )
 from datasets import Dataset, Features, Sequence, ClassLabel, Value, Array2D, Array3D
 from seqeval.metrics import classification_report, f1_score, precision_score, recall_score
 
-def normalize_box(box, width, height):
-    return [
-        int(1000 * (box[0] / width)),
-        int(1000 * (box[1] / height)),
-        int(1000 * (box[2] / width)),
-        int(1000 * (box[3] / height))
-    ]
+
+class MetricsCallback(TrainerCallback):
+    """Callback to collect metrics during training"""
+    def __init__(self):
+        self.metrics_history = []
+    
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        # Make a deep copy to avoid reference issues
+        if metrics:
+            self.metrics_history.append(copy.deepcopy(metrics))
+    
+    def on_epoch_end(self, args, state, control, **kwargs):
+        # If we're not evaluating every epoch, we still want to track train loss
+        if not self.metrics_history or len(self.metrics_history) < state.epoch:
+            metrics = {"train_loss": state.log_history[-1].get("loss", 0)}
+            self.metrics_history.append(metrics)
+
 
 class ModelTrainer:
-    """Class to handle the training of document models based on labeled data"""
+    """Class to handle the training of document models based on labeled data using built-in OCR"""
 
     def __init__(self, output_dir="trained_model"):
         """
@@ -42,7 +56,7 @@ class ModelTrainer:
     
     def prepare_training_data(self, documents):
         """
-        Prepare training data from labeled documents
+        Prepare training data from labeled documents using built-in OCR
         
         Args:
             documents: List of Document objects with labeled text boxes
@@ -50,94 +64,51 @@ class ModelTrainer:
         Returns:
             Dataset ready for training
         """
+        print("\n=== DEBUGGING TRAINING DATA PREPARATION ===")
         train_examples = []
         
-        for doc in documents:
+        for doc_idx, doc in enumerate(documents):
+            print(f"\nDocument {doc_idx}: {doc.filename}")
+            
             for page_idx, boxes in enumerate(doc.page_boxes):
                 if not boxes:  # Skip pages with no boxes
                     continue
-                    
+                
+                print(f"\n  Page {page_idx} - {len(boxes)} boxes")
+                
                 # Get the page image
                 image = doc.images[page_idx]
                 
-                # Get image dimensions for normalization
-                width, height = image.size if hasattr(image, 'size') else (image.width, image.height)
-                
-                # Prepare tokens, bboxes, and labels
-                tokens = []
-                bboxes = []
-                ner_tags = []
+                # Create a ground truth label dictionary for this page
+                # We'll use string representations of box coordinates as keys
+                label_dict = {}
                 
                 for box in boxes:
-                    for word in box.words:
-                        tokens.append(word)
-                        
-                        # Normalize bbox coordinates to 0-1000 range
-                        normalized_bbox = normalize_box(
-                            [box.x, box.y, box.x + box.w, box.y + box.h], 
-                            width, 
-                            height
-                        )
-                        bboxes.append(normalized_bbox)
-                        
-                        # Use the label for this box
-                        label = box.label
-                        
-                        # Determine if this is the first word in the box (B- prefix)
-                        # or a continuation (I- prefix)
-                        if word == box.words[0] and label != "O":
-                            ner_tags.append(f"B-{label}")
-                        elif label != "O":
-                            ner_tags.append(f"I-{label}")
-                        else:
-                            ner_tags.append(label)  # "O" remains as is
+                    if box.label != "O":
+                        # Store box coordinates and label
+                        # Convert tuple to string for dictionary key
+                        box_key = f"{box.x},{box.y},{box.x + box.w},{box.y + box.h}"
+                        label_dict[box_key] = box.label
                 
+                print(f"  Created label dictionary with {len(label_dict)} labeled boxes")
+                
+                # Store the image and label dictionary
                 train_examples.append({
                     "id": f"{doc.filename}_page{page_idx}",
-                    "tokens": tokens,
-                    "bboxes": bboxes,
-                    "ner_tags": ner_tags,
-                    "image": image
+                    "image": image,
+                    "label_dict": label_dict
                 })
+        
+        print(f"\nTotal examples created: {len(train_examples)}")
+        print("=== END DEBUGGING ===\n")
         
         # Convert to dataset
         dataset = Dataset.from_list(train_examples)
         return dataset
     
-    def prepare_label_mappings(self, dataset):
-        """
-        Create id2label and label2id mappings from the dataset
-        
-        Args:
-            dataset: Dataset with ner_tags
-            
-        Returns:
-            id2label, label2id dictionaries
-        """
-        # Get unique labels
-        unique_labels = set()
-        for example in dataset:
-            unique_labels.update(example["ner_tags"])
-        
-        # Sort labels (keep "O" first)
-        if "O" in unique_labels:
-            unique_labels.remove("O")
-            label_list = ["O"] + sorted(unique_labels)
-        else:
-            label_list = sorted(unique_labels)
-        
-        # Create mappings
-        id2label = {i: label for i, label in enumerate(label_list)}
-        label2id = {label: i for i, label in enumerate(label_list)}
-        
-        self.id2label = id2label
-        self.label2id = label2id
-        
-        return id2label, label2id
-    
     def prepare_examples(self, examples):
         """
-        Process examples for the model
+        Process examples for the model using built-in OCR
         
         Args:
             examples: Batch of examples
@@ -146,30 +117,152 @@ class ModelTrainer:
             Processed batch
         """
         images = examples["image"]
-        words = examples["tokens"]
-        boxes = examples["bboxes"]
+        label_dicts = examples["label_dict"]
         
-        # Convert string labels to ids using label2id mapping
-        word_labels = []
-        for example_labels in examples["ner_tags"]:
-            example_label_ids = []
-            for label in example_labels:
-                if label in self.label2id:
-                    example_label_ids.append(self.label2id[label])
+        # Process each image individually to avoid batching issues
+        processed_examples = []
+        
+        for image_idx, (image, label_dict) in enumerate(zip(images, label_dicts)):
+            print(f"Processing image {image_idx}")
+            
+            # Run processor on this single image
+            encoding = self.processor(image, return_tensors="pt")
+            
+            # Extract word boxes and ids
+            word_boxes = encoding.pop("bbox", None)[0]
+            word_ids = encoding.pop("input_ids", None)[0]
+            attention_mask = encoding.pop("attention_mask", None)[0]
+            
+            # Create labels tensor
+            labels = torch.ones(len(word_ids)) * -100  # Default: ignore for loss calculation
+            
+            # Match boxes to our labeled areas
+            for i, (box, word_id) in enumerate(zip(word_boxes, word_ids)):
+                # Skip special tokens
+                if word_id in self.processor.tokenizer.all_special_ids:
+                    continue
+                
+                # Get coordinates of this token
+                x_min, y_min, x_max, y_max = box.tolist()
+                
+                # Try to match this box to one of our labeled boxes
+                matched_label = "O"  # Default label
+                
+                for box_key, label in label_dict.items():
+                    # Parse the coordinates from the string key
+                    box_coords = box_key.split(',')
+                    box_x1, box_y1, box_x2, box_y2 = map(int, box_coords)
+                    
+                    # Check for overlap
+                    if (x_min <= box_x2 and x_max >= box_x1 and
+                        y_min <= box_y2 and y_max >= box_y1):
+                        matched_label = label
+                        break
+                
+                # Convert label to id
+                if matched_label in self.label2id:
+                    labels[i] = self.label2id[matched_label]
                 else:
-                    example_label_ids.append(self.label2id["O"])  # Default to "O" if not found
-            word_labels.append(example_label_ids)
+                    labels[i] = self.label2id["O"]
+            
+            # Store processed example
+            processed_examples.append({
+                "pixel_values": encoding["pixel_values"][0],
+                "input_ids": word_ids,
+                "attention_mask": attention_mask,
+                "bbox": word_boxes,
+                "labels": labels
+            })
         
-        encoding = self.processor(
-            images, 
-            words, 
-            boxes=boxes, 
-            word_labels=word_labels,
-            truncation=True, 
-            padding="max_length"
-        )
+        # We need to pad everything to the same length
+        max_length = max(len(ex["input_ids"]) for ex in processed_examples)
         
-        return encoding
+        # Create batch with proper padding
+        batch = {
+            "pixel_values": torch.stack([ex["pixel_values"] for ex in processed_examples]),
+            "input_ids": torch.stack([self._pad_tensor(ex["input_ids"], max_length, 
+                                    self.processor.tokenizer.pad_token_id) 
+                                    for ex in processed_examples]),
+            "attention_mask": torch.stack([self._pad_tensor(ex["attention_mask"], max_length, 0) 
+                                        for ex in processed_examples]),
+            "bbox": torch.stack([self._pad_tensor(ex["bbox"], max_length, 
+                            torch.tensor([0, 0, 0, 0])) 
+                            for ex in processed_examples]),
+            "labels": torch.stack([self._pad_tensor(ex["labels"], max_length, -100) 
+                                for ex in processed_examples])
+        }
+        
+        return batch
+
+    def _pad_tensor(self, tensor, target_length, padding_value):
+        """
+        Pad a tensor to the target length
+        
+        Args:
+            tensor: Tensor to pad
+            target_length: Desired length
+            padding_value: Value to use for padding
+            
+        Returns:
+            Padded tensor
+        """
+        current_length = len(tensor)
+        if current_length >= target_length:
+            return tensor[:target_length]
+        
+        # Create padding
+        if isinstance(padding_value, torch.Tensor) and padding_value.dim() > 0:
+            # For multi-dimensional values like bbox
+            padding = torch.stack([padding_value] * (target_length - current_length))
+            return torch.cat([tensor, padding], dim=0)
+        else:
+            # For scalar values
+            padding = torch.ones(target_length - current_length, 
+                            dtype=tensor.dtype) * padding_value
+            return torch.cat([tensor, padding], dim=0)
+    
+    def prepare_label_mappings(self, dataset):
+        """
+        Create id2label and label2id mappings from the dataset
+        
+        Args:
+            dataset: Dataset with label_dict
+            
+        Returns:
+            id2label, label2id dictionaries
+        """
+        # Get unique labels from all label dictionaries
+        unique_labels = set(["O"])  # Always include "O"
+        
+        for example in dataset:
+            unique_labels.update(example["label_dict"].values())
+        
+        print("\n=== DEBUGGING LABEL MAPPINGS ===")
+        print(f"All unique labels: {sorted(unique_labels)}")
+        
+        # Sort labels (keep "O" first)
+        label_list = ["O"] + sorted([l for l in unique_labels if l != "O"])
+        
+        print(f"Ordered label list: {label_list}")
+        
+        # Create mappings
+        id2label = {i: label for i, label in enumerate(label_list)}
+        label2id = {label: i for i, label in enumerate(label_list)}
+        
+        print("id2label mapping:")
+        for id, label in id2label.items():
+            print(f"  {id}: '{label}'")
+        
+        print("label2id mapping:")
+        for label, id in label2id.items():
+            print(f"  '{label}': {id}")
+        
+        print("=== END DEBUGGING ===\n")
+        
+        self.id2label = id2label
+        self.label2id = label2id
+        
+        return id2label, label2id
     
     def compute_metrics(self, p):
         """
@@ -216,13 +309,16 @@ class ModelTrainer:
             num_train_epochs: Number of training epochs
             
         Returns:
-            Trained model
+            Trained model and results dictionary
         """
+        # Start timing training
+        training_start_time = time.time()
+        
         # Prepare label mappings
         self.prepare_label_mappings(train_data)
         
-        # Initialize processor
-        self.processor = AutoProcessor.from_pretrained(model_name, apply_ocr=False)
+        # Initialize processor with OCR enabled
+        self.processor = AutoProcessor.from_pretrained(model_name, apply_ocr=True)
         
         # Define features for set_format to work properly
         self.features = Features({
@@ -238,7 +334,6 @@ class ModelTrainer:
             self.prepare_examples,
             batched=True,
             remove_columns=train_data.column_names,
-            features=self.features,
         )
         
         if val_data:
@@ -246,7 +341,6 @@ class ModelTrainer:
                 self.prepare_examples,
                 batched=True,
                 remove_columns=val_data.column_names,
-                features=self.features,
             )
         else:
             eval_dataset = None
@@ -264,6 +358,9 @@ class ModelTrainer:
             id2label=self.id2label,
             label2id=self.label2id
         )
+        
+        # Prepare for collecting metrics history
+        metrics_callback = MetricsCallback()
         
         # Training arguments
         training_args = TrainingArguments(
@@ -289,10 +386,23 @@ class ModelTrainer:
             tokenizer=self.processor,
             data_collator=default_data_collator,
             compute_metrics=self.compute_metrics if eval_dataset else None,
+            callbacks=[metrics_callback],
         )
         
         # Train the model
-        trainer.train()
+        train_result = trainer.train()
+        
+        # Get metrics
+        train_metrics = train_result.metrics
+        
+        # Collect evaluation metrics
+        final_metrics = {}
+        if eval_dataset:
+            eval_metrics = trainer.evaluate()
+            final_metrics = {k.replace("eval_", ""): v for k, v in eval_metrics.items()}
+        
+        # Calculate training time
+        training_time = time.time() - training_start_time
         
         # Save the model
         trainer.save_model(self.output_dir)
@@ -300,58 +410,48 @@ class ModelTrainer:
         # Save processor for inference
         self.processor.save_pretrained(self.output_dir)
         
-        return self.model
+        # Create results dictionary
+        results = self.create_results_dict(
+            model_name=model_name,
+            batch_size=batch_size,
+            learning_rate=learning_rate,
+            num_epochs=num_train_epochs,
+            training_time=training_time,
+            final_metrics=final_metrics,
+            history_metrics=metrics_callback.metrics_history,
+            label_list=list(self.id2label.values())
+        )
+        
+        # Save the results
+        self.save_results(results)
+        
+        return self.model, results
     
     def predict(self, document, page_idx):
         """
-        Predict labels for a page in the document
+        Predict labels for a page in the document using built-in OCR
         
         Args:
             document: Document object
             page_idx: Page index to predict
             
         Returns:
-            List of predicted labels for text boxes
+            Dictionary with predictions and OCR results
         """
         if not self.model or not self.processor:
             raise ValueError("Model or processor not initialized. Run train first.")
         
-        # Get image and boxes from the document
+        # Get image from the document
         image = document.images[page_idx]
-        boxes = document.page_boxes[page_idx]
         
-        if not boxes:
-            return []
+        # Process the image with the processor's OCR
+        encoding = self.processor(image, return_tensors="pt")
         
-        # Get image dimensions for normalization
-        width, height = image.size if hasattr(image, 'size') else (image.width, image.height)
+        # Extract original word boxes and words for later reference
+        word_boxes = encoding.pop("bbox", None)[0]
+        word_ids = encoding.pop("input_ids", None)[0]
         
-        # Prepare input data
-        tokens = []
-        bboxes = []
-        
-        for box in boxes:
-            for word in box.words:
-                tokens.append(word)
-                # Normalize bbox coordinates to 0-1000 range
-                normalized_bbox = normalize_box(
-                    [box.x, box.y, box.x + box.w, box.y + box.h], 
-                    width, 
-                    height
-                )
-                bboxes.append(normalized_bbox)
-        
-        # Prepare for model
-        encoding = self.processor(
-            image, 
-            tokens, 
-            boxes=bboxes, 
-            return_tensors="pt",
-            truncation=True,
-            padding="max_length"
-        )
-        
-        # Get predictions
+        # Get predictions from the model
         with torch.no_grad():
             outputs = self.model(**encoding)
         
@@ -363,49 +463,110 @@ class ModelTrainer:
         if not isinstance(predictions, list):
             predictions = [predictions]
         
-        # Map token-level predictions back to word-level
-        word_predictions = []
-        word_idx = 0
-        for i, pred in enumerate(predictions):
-            if i < len(tokens) and pred != -100:
-                word_predictions.append(self.id2label[pred])
-                word_idx += 1
+        # Map predictions back to words and boxes
+        result = []
         
-        # Map word-level predictions back to box-level
-        box_predictions = []
-        word_idx = 0
+        # Decode tokens to words for display
+        tokenizer = self.processor.tokenizer
         
-        for box in boxes:
-            # Get predictions for all words in this box
-            box_pred_labels = []
-            for _ in box.words:
-                if word_idx < len(word_predictions):
-                    box_pred_labels.append(word_predictions[word_idx])
-                    word_idx += 1
-            
-            # Use majority voting to determine the box label
-            if box_pred_labels:
-                # Remove B- or I- prefix if present
-                processed_labels = [label[2:] if label.startswith(("B-", "I-")) else label for label in box_pred_labels]
+        for i, (word_id, box, pred) in enumerate(zip(word_ids, word_boxes, predictions)):
+            # Skip special tokens
+            if word_id in tokenizer.all_special_ids:
+                continue
                 
-                # Find the most common label (excluding "O")
-                label_counts = {}
-                for label in processed_labels:
-                    if label != "O":
-                        label_counts[label] = label_counts.get(label, 0) + 1
-                
-                if label_counts:
-                    # Get the label with the highest count
-                    box_label = max(label_counts.items(), key=lambda x: x[1])[0]
-                else:
-                    box_label = "O"
-                
-                box_predictions.append(box_label)
+            word = tokenizer.decode([word_id])
+            if pred != -100:
+                label = self.id2label[pred]
             else:
-                box_predictions.append("O")
+                label = "O"
+                
+            # Convert normalized box back to pixel coordinates
+            x1, y1, x2, y2 = box.tolist()
+            
+            # Store the prediction
+            result.append({
+                "word": word,
+                "box": [x1, y1, x2, y2],  # Keep normalized for consistency
+                "label": label
+            })
         
-        return box_predictions
+        print(f"Generated {len(result)} predictions")
+        return result
+    
+    def create_results_dict(self, model_name, batch_size, learning_rate, num_epochs, 
+                        training_time, final_metrics, history_metrics, label_list):
+        """Create a dictionary of training results for visualization"""
+        results = {
+            "model_info": {
+                "model_name": model_name,
+                "training_time": training_time,
+                "final_f1": final_metrics.get("f1", 0),
+                "batch_size": batch_size,
+                "learning_rate": learning_rate,
+                "num_epochs": num_epochs
+            }
+        }
+        
+        # Add learning curve data
+        if history_metrics:
+            epochs = list(range(1, len(history_metrics) + 1))
+            
+            # Extract metrics from history
+            train_loss = [metrics.get("train_loss", 0) for metrics in history_metrics]
+            eval_loss = [metrics.get("eval_loss", 0) for metrics in history_metrics]
+            train_f1 = [metrics.get("train_f1", 0) for metrics in history_metrics]
+            eval_f1 = [metrics.get("eval_f1", 0) for metrics in history_metrics]
+            
+            results["learning_curve"] = {
+                "epochs": epochs,
+                "train_loss": train_loss,
+                "eval_loss": eval_loss,
+                "train_f1": train_f1,
+                "eval_f1": eval_f1
+            }
+        
+        # Add per-class metrics if available
+        if final_metrics:
+            # Check if we have per-class metrics
+            precision_keys = [k for k in final_metrics.keys() if k.startswith("precision_")]
+            recall_keys = [k for k in final_metrics.keys() if k.startswith("recall_")]
+            f1_keys = [k for k in final_metrics.keys() if k.startswith("f1_")]
+            
+            # If we have per-class metrics, add them
+            if precision_keys and recall_keys and f1_keys:
+                class_metrics = {
+                    "precision": {},
+                    "recall": {},
+                    "f1": {}
+                }
+                
+                # Extract class names from metric keys
+                for key in precision_keys:
+                    class_name = key.replace("precision_", "")
+                    class_metrics["precision"][class_name] = final_metrics.get(key, 0)
+                
+                for key in recall_keys:
+                    class_name = key.replace("recall_", "")
+                    class_metrics["recall"][class_name] = final_metrics.get(key, 0)
+                
+                for key in f1_keys:
+                    class_name = key.replace("f1_", "")
+                    class_metrics["f1"][class_name] = final_metrics.get(key, 0)
+                
+                results["class_metrics"] = class_metrics
+        
+        return results
 
+    def save_results(self, results):
+        """Save training results to a JSON file"""
+        results_path = os.path.join(self.output_dir, "training_results.json")
+        
+        try:
+            with open(results_path, 'w') as f:
+                json.dump(results, f, indent=2)
+        except Exception as e:
+            print(f"Error saving results: {str(e)}")
+            
     def load_model(self, model_dir):
         """
         Load a trained model from a directory
@@ -416,7 +577,7 @@ class ModelTrainer:
         Returns:
             Loaded model
         """
-        self.processor = AutoProcessor.from_pretrained(model_dir)
+        self.processor = AutoProcessor.from_pretrained(model_dir, apply_ocr=True)
         self.model = AutoModelForTokenClassification.from_pretrained(model_dir)
         
         # Get label mappings from the model config

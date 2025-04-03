@@ -703,19 +703,66 @@ class PDFOCRApp(QMainWindow):
             self.status_label.setText("Model prediction canceled")
     
     def apply_predictions(self, predictions):
-        """Apply the predictions from the model to the current page's boxes"""
+        """
+        Apply the predictions from the model to the current page
+        
+        Args:
+            predictions: List of dictionaries with word, box, and label information
+        """
         if self.current_document_idx < 0 or not predictions:
             return
         
         doc = self.documents[self.current_document_idx]
         
-        # Update box labels with predictions
-        for i, box in enumerate(self.text_boxes):
-            if i < len(predictions):
-                box.label = predictions[i]
+        # Clear current text boxes on the page
+        doc.page_boxes[doc.current_page] = []
         
-        # Update the display
+        # Get image dimensions for denormalization
+        image = doc.images[doc.current_page]
+        width, height = image.size if hasattr(image, 'size') else (image.width, image.height)
+        
+        # Group predictions by label (except 'O')
+        label_groups = {}
+        
+        for pred in predictions:
+            label = pred["label"]
+            if label != "O":
+                if label not in label_groups:
+                    label_groups[label] = []
+                label_groups[label].append(pred)
+        
+        from models.text_box import TextBox
+        
+        # Create new text boxes from model predictions
+        for label, items in label_groups.items():
+            for item in items:
+                # Denormalize the box coordinates
+                norm_box = item["box"]
+                x1 = int(norm_box[0] * width / 1000)
+                y1 = int(norm_box[1] * height / 1000)
+                x2 = int(norm_box[2] * width / 1000)
+                y2 = int(norm_box[3] * height / 1000)
+                
+                # Create a new text box
+                text_box = TextBox(
+                    x=x1,
+                    y=y1,
+                    w=x2-x1,
+                    h=y2-y1,
+                    words=[item["word"]],
+                    label=label
+                )
+                
+                # Add the box to the document
+                doc.page_boxes[doc.current_page].append(text_box)
+        
+        # Update the text_boxes reference for the current page
+        self.text_boxes = doc.page_boxes[doc.current_page]
+        
+        # Display the updated page
         self.display_current_page()
         
         # Update document info
         self.update_document_info()
+        
+        self.status_label.setText(f"Applied {len(doc.page_boxes[doc.current_page])} labeled boxes from model predictions")
