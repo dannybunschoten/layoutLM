@@ -133,12 +133,12 @@ class ModelTrainer:
       boxes = examples["bboxes"]
       word_labels = examples["ner_tags"]
 
-      if self.processor is None:
+      if processor is None:
         raise ValueError(
           "Processor is not initialized. Ensure the processor is loaded or set before calling this method."
         )
 
-      encoding = self.processor(  # type: ignore
+      encoding = processor(  # type: ignore
         images=images,
         text=words,
         boxes=boxes,
