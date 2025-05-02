@@ -125,7 +125,7 @@ class ModelTrainer:
     else:
       train_dataset = dataset
       eval_dataset = None
-      print("No validation split provided, using all data for training")
+      print(f"No validation split provided, using all data for training, {val_split}")
 
     def preprocess_data(examples: Any) -> Dict[str, Any]:
       images = examples["image"]

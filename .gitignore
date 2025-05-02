@@ -3,3 +3,4 @@ trained_model/
 __pycache__/
 *.py[cod]
 repo.zip
+state
