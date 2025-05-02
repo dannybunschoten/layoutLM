@@ -100,6 +100,7 @@ class ModelTrainer:
     """Train the model on document data"""
     examples, label2id = self.prepare_dataset_from_documents(documents)
     id2label = {v: k for k, v in label2id.items()}
+    label_list = list(id2label.values())
 
     processor: AutoProcessor = AutoProcessor.from_pretrained(  # type: ignore
       model_name, apply_ocr=False
@@ -174,11 +175,11 @@ class ModelTrainer:
 
       # Remove ignored index (special tokens)
       true_predictions = [
-        [self.label_list[p] for (p, l) in zip(prediction, label) if l != -100]
+        [label_list[p] for (p, l) in zip(prediction, label) if l != -100]
         for prediction, label in zip(predictions, labels)
       ]
       true_labels = [
-        [self.label_list[l] for (p, l) in zip(prediction, label) if l != -100]
+        [label_list[l] for (p, l) in zip(prediction, label) if l != -100]
         for prediction, label in zip(predictions, labels)
       ]
 
