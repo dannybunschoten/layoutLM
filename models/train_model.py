@@ -91,7 +91,7 @@ class ModelTrainer:
   def train(
     self,
     documents: List[Document],
-    val_split: float = 0.2,
+    val_split: float = 0.25,
     model_name: str = "microsoft/layoutlmv3-base",
     batch_size: int = 2,
     learning_rate: float = 1e-5,
