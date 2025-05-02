@@ -686,14 +686,10 @@ class PDFOCRApp(QMainWindow):
       return None
 
     # Find the bounding rectangle
-    min_x = min(box.x for box in boxes)
-    min_y = min(box.y for box in boxes)
-    max_x = max(box.x + box.w for box in boxes)
-    max_y = max(box.y + box.h for box in boxes)
-
-    # Calculate width and height
-    width = max_x - min_x
-    height = max_y - min_y
+    min_x = min(min(box.x1, box.x2) for box in boxes)
+    min_y = min(min(box.y1, box.y2) for box in boxes)
+    max_x = max(max(box.x1, box.x2) for box in boxes)
+    max_y = max(max(box.y1, box.y2) for box in boxes)
 
     # Combine all words in the selection order
     all_words = []
@@ -704,7 +700,7 @@ class PDFOCRApp(QMainWindow):
     label = boxes[0].label
 
     # Create a new box with the same label
-    return TextBox(min_x, min_y, width, height, all_words, label)
+    return TextBox(min_x, min_y, max_x, max_y, all_words, label)
 
   def clear_selection(self):
     """Clear all selected boxes"""
