@@ -1,36 +1,47 @@
+from typing import List, Tuple, Union
 import cv2
+import numpy as np
 
 class TextBox:
     """Class representing a text box identified by OCR"""
-
-    def __init__(self, x, y, w, h, words, label="O"):
-        self.x = x
-        self.y = y
-        self.w = w
-        self.h = h
-        self.words = words if isinstance(words, list) else [words]
-        self.label = label
+    
+    def __init__(self, 
+                 x1: int, 
+                 y1: int, 
+                 x2: int, 
+                 y2: int, 
+                 words: Union[str, List[str]], 
+                 label: str = "O") -> None:
+        self.x1: int = x1
+        self.y1: int = y1
+        self.x2: int = x2
+        self.y2: int = y2
+        self.words: List[str] = words if isinstance(words, list) else [words]
+        self.label: str = label
 
     @property
-    def text(self):
+    def text(self) -> str:
         """Return the text content of the box by joining words"""
         return " ".join(self.words)
 
     @property
-    def coordinates(self):
+    def coordinates(self) -> Tuple[int, int, int, int]:
         """Return the coordinates of the box as a tuple"""
-        return (self.x, self.y, self.w, self.h)
+        return (self.x1, self.y1, self.x2, self.y2)
 
-    def contains_point(self, x, y):
+    def contains_point(self, x: int, y: int) -> bool:
         """Check if a point is inside the box"""
-        return (self.x <= x <= self.x + self.w) and (self.y <= y <= self.y + self.h)
+        return self.x1 <= x <= self.x2 and self.y1 <= y <= self.y2
 
-    def draw(self, image, color=(0, 255, 0), thickness=2):
+    def draw(self, 
+             image: np.ndarray, 
+             color: Tuple[int, int, int] = (0, 255, 0), 
+             thickness: int = 2) -> None:
         """Draw the box on an image"""
         cv2.rectangle(
             image,
-            (self.x, self.y),
-            (self.x + self.w, self.y + self.h),
+            (self.x1, self.y1),
+            (self.x2, self.y2),
             color,
             thickness,
         )

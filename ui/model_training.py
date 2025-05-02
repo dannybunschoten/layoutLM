@@ -16,9 +16,7 @@ from PyQt5.QtWidgets import (
     QGroupBox
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QThread
-import os
 import torch
-from datasets import Dataset
 from models.train_model import ModelTrainer
 
 
@@ -27,11 +25,11 @@ class TrainingWorker(QThread):
     progress_update = pyqtSignal(str)
     finished_signal = pyqtSignal(bool, str)
 
-    def __init__(self, trainer, train_data, val_data, model_name, batch_size, learning_rate, epochs):
+    def __init__(self, trainer, documents, val_split, model_name, batch_size, learning_rate, epochs):
         super().__init__()
         self.trainer = trainer
-        self.train_data = train_data
-        self.val_data = val_data
+        self.documents = documents
+        self.val_split = val_split
         self.model_name = model_name
         self.batch_size = batch_size
         self.learning_rate = learning_rate
@@ -39,23 +37,41 @@ class TrainingWorker(QThread):
 
     def run(self):
         try:
-            self.progress_update.emit("Preparing training data...")
+            self.progress_update.emit("Preparing document data...")
+            
+            # Check if we have valid documents
+            num_boxes = sum(doc.get_box_count() for doc in self.documents)
+            self.progress_update.emit(f"Processing {len(self.documents)} documents with {num_boxes} text boxes")
+            
+            if num_boxes == 0:
+                raise ValueError("No text boxes found in the selected documents")
             
             self.progress_update.emit("Starting training...")
-            self.trainer.train(
-                train_data=self.train_data,
-                val_data=self.val_data,
+            results = self.trainer.train(
+                documents=self.documents,
+                val_split=self.val_split,
                 model_name=self.model_name,
                 batch_size=self.batch_size,
                 learning_rate=self.learning_rate,
-                num_train_epochs=self.epochs
+                epochs=self.epochs
             )
             
+            # Create a summary message
+            runtime = results.get("train_runtime", 0)
+            runtime_str = f"{runtime:.1f} seconds" if runtime < 60 else f"{runtime/60:.1f} minutes"
+            
+            summary = f"Training completed in {runtime_str}\n"
+            summary += f"Model saved to: {results['model_path']}"
+            
             self.progress_update.emit("Training completed!")
-            self.finished_signal.emit(True, "Model training completed successfully!")
+            self.finished_signal.emit(True, summary)
+            
         except Exception as e:
+            import traceback
+            error_message = f"Training failed: {str(e)}\n\n"
+            error_message += traceback.format_exc()
             self.progress_update.emit(f"Error during training: {str(e)}")
-            self.finished_signal.emit(False, f"Training failed: {str(e)}")
+            self.finished_signal.emit(False, error_message)
 
 
 class ModelTrainingDialog(QDialog):
@@ -66,9 +82,6 @@ class ModelTrainingDialog(QDialog):
         self.documents = documents or []
         self.trainer = ModelTrainer()
         self.worker = None
-        self.dataset = None
-        self.train_dataset = None
-        self.val_dataset = None
         
         self.initUI()
     
@@ -201,16 +214,15 @@ class ModelTrainingDialog(QDialog):
         for doc in self.documents:
             # Only add documents that have at least one page with labeled boxes
             has_labels = False
+            box_count = 0
             for page_boxes in doc.page_boxes:
                 for box in page_boxes:
                     if box.label != "O":
                         has_labels = True
-                        break
-                if has_labels:
-                    break
+                        box_count += 1
             
             if has_labels:
-                item_text = f"{doc.filename} ({doc.get_page_count()} pages, {doc.get_box_count()} boxes)"
+                item_text = f"{doc.filename} ({doc.get_page_count()} pages, {box_count} labeled boxes)"
                 self.doc_list.addItem(item_text)
                 # Store the document index as item data
                 self.doc_list.item(self.doc_list.count() - 1).setData(Qt.UserRole, self.documents.index(doc))
@@ -218,7 +230,7 @@ class ModelTrainingDialog(QDialog):
                 self.doc_list.item(self.doc_list.count() - 1).setFlags(
                     self.doc_list.item(self.doc_list.count() - 1).flags() | Qt.ItemIsUserCheckable
                 )
-                self.doc_list.item(self.doc_list.count() - 1).setCheckState(Qt.Unchecked)
+                self.doc_list.item(self.doc_list.count() - 1).setCheckState(Qt.Checked)  # Default to checked
     
     def select_all_documents(self):
         """Select all documents in the list"""
@@ -245,32 +257,6 @@ class ModelTrainingDialog(QDialog):
                 selected_docs.append(self.documents[doc_idx])
         return selected_docs
     
-    def prepare_dataset(self):
-        """Prepare dataset from selected documents"""
-        selected_docs = self.get_selected_documents()
-        
-        if not selected_docs:
-            QMessageBox.warning(self, "No Documents Selected", 
-                               "Please select at least one document for training.")
-            return False
-        
-        try:
-            self.dataset = self.trainer.prepare_training_data(selected_docs)
-            
-            # Split into train/val if needed
-            if self.use_val_check.isChecked():
-                split = self.dataset.train_test_split(test_size=0.2)
-                self.train_dataset = split["train"]
-                self.val_dataset = split["test"]
-            else:
-                self.train_dataset = self.dataset
-                self.val_dataset = None
-            
-            return True
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to prepare dataset: {str(e)}")
-            return False
-    
     def start_training(self):
         """Start the training process"""
         # Check GPU availability
@@ -282,7 +268,24 @@ class ModelTrainingDialog(QDialog):
             if reply == QMessageBox.No:
                 return
         
-        if not self.prepare_dataset():
+        # Get selected documents
+        selected_docs = self.get_selected_documents()
+        if not selected_docs:
+            QMessageBox.warning(self, "No Documents Selected", 
+                              "Please select at least one document for training.")
+            return
+        
+        # Check for documents with labels
+        labeled_count = 0
+        for doc in selected_docs:
+            for page_boxes in doc.page_boxes:
+                for box in page_boxes:
+                    if box.label != "O":
+                        labeled_count += 1
+        
+        if labeled_count == 0:
+            QMessageBox.warning(self, "No Labels Found", 
+                              "None of the selected documents have labeled text boxes. Please label some text boxes first.")
             return
         
         # Update UI
@@ -291,15 +294,15 @@ class ModelTrainingDialog(QDialog):
         self.progress_bar.setVisible(True)
         self.status_label.setText("Preparing to train...")
         
-        # Set up the trainer
+        # Set up the trainer with output directory
         output_dir = self.output_dir_edit.text()
         self.trainer = ModelTrainer(output_dir=output_dir)
         
         # Create worker thread
         self.worker = TrainingWorker(
             trainer=self.trainer,
-            train_data=self.train_dataset,
-            val_data=self.val_dataset,
+            documents=selected_docs,
+            val_split=0.2 if self.use_val_check.isChecked() else 0,
             model_name=self.model_name_combo.currentText(),
             batch_size=self.batch_size_spin.value(),
             learning_rate=self.lr_spin.value(),

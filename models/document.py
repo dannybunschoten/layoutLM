@@ -1,4 +1,5 @@
 import os
+from typing import Optional, Tuple
 import numpy as np
 import cv2
 import pytesseract
@@ -6,11 +7,10 @@ from pdf2image import convert_from_path
 from PyQt5.QtGui import QPixmap, QImage
 from models.text_box import TextBox
 
-
 class Document:
     """Class representing a PDF document with OCR data"""
 
-    def __init__(self, file_path):
+    def __init__(self, file_path: str) -> None:
         self.file_path = file_path
         self.filename = os.path.basename(file_path)
         self.images = []  # List of page images
@@ -19,7 +19,7 @@ class Document:
         self.thumbnail = None  # Thumbnail of the first page
         self.load_document()
 
-    def load_document(self):
+    def load_document(self) -> bool:
         """Load the PDF and convert pages to images"""
         try:
             self.images = convert_from_path(self.file_path)
@@ -33,7 +33,7 @@ class Document:
             print(f"Error loading document: {str(e)}")
             return False
 
-    def create_thumbnail(self, size=(200, 200)):
+    def create_thumbnail(self, size : Tuple[int, int]=(200, 200)) -> None:
         """Create a thumbnail of the first page"""
         if not self.images:
             return
@@ -51,12 +51,12 @@ class Document:
 
         # Convert to QPixmap for display
         rgb_image = cv2.cvtColor(thumbnail, cv2.COLOR_BGR2RGB)
-        h, w, c = rgb_image.shape
+        h, w, _ = rgb_image.shape
         bytes_per_line = 3 * w
         q_img = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
         self.thumbnail = QPixmap.fromImage(q_img)
 
-    def run_ocr_on_page(self, page_idx):
+    def run_ocr_on_page(self, page_idx: int) -> bool:
         """Run OCR on a specific page"""
         if page_idx >= len(self.images) or page_idx < 0:
             return False
@@ -80,15 +80,15 @@ class Document:
             # Create TextBox objects directly from OCR data
             for i in range(len(ocr_data["text"])):
                 if ocr_data["text"][i].strip():
-                    x = ocr_data["left"][i]
-                    y = ocr_data["top"][i]
-                    w = ocr_data["width"][i]
-                    h = ocr_data["height"][i]
+                    x1 = ocr_data["left"][i]
+                    y1 = ocr_data["top"][i]
+                    x2 = ocr_data["left"][i] + ocr_data["width"][i]
+                    y2 = ocr_data["top"][i] + ocr_data["height"][i]
                     words = [ocr_data["text"][i]]
                     label = "O"  # Default label
 
                     # Create TextBox and add it to the page's boxes
-                    box = TextBox(x, y, w, h, words, label)
+                    box = TextBox(x1, y1, x2, y2, words, label)
                     self.page_boxes[page_idx].append(box)
 
             return True
@@ -96,11 +96,11 @@ class Document:
             print(f"OCR Error: {str(e)}")
             return False
 
-    def get_page_count(self):
+    def get_page_count(self) -> int:
         """Return the number of pages in the document"""
         return len(self.images)
 
-    def get_current_page_image(self):
+    def get_current_page_image(self) -> np.ndarray:
         """Get the current page image with boxes drawn on it"""
         if not self.images or self.current_page >= len(self.images):
             return None
@@ -111,7 +111,7 @@ class Document:
 
         return img_np
 
-    def get_box_count(self, page_idx=None):
+    def get_box_count(self, page_idx: Optional[int] = None) -> int:
         """Get the number of boxes on a page or in the entire document"""
         if page_idx is not None:
             if page_idx < len(self.page_boxes):

@@ -1,6 +1,5 @@
 import os
 import cv2
-import numpy as np
 from PyQt5.QtWidgets import (
     QMainWindow,
     QPushButton,
@@ -21,13 +20,12 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QPixmap, QCursor, QImage
 from PyQt5.QtCore import Qt, QTimer, QSize
-
 from models.text_box import TextBox
 from ui.model_training import ModelTrainingDialog
 from ui.model_prediction import ModelPredictionDialog
-
 from models.document import Document
 from ui.document_list_item import DocumentListItem
+from ui.simple_export_dialog import SimpleExportDialog
 
 class PDFOCRApp(QMainWindow):
     def __init__(self):
@@ -40,7 +38,7 @@ class PDFOCRApp(QMainWindow):
         self.initUI()
 
     def initUI(self):
-        self.setWindowTitle("Multiple Document OCR Tool")
+        self.setWindowTitle("AI key value pair extractor")
         self.setGeometry(100, 100, 1200, 800)
 
         # Create central widget and main layout
@@ -106,6 +104,22 @@ class PDFOCRApp(QMainWindow):
         self.clear_sel_btn.setEnabled(False)
         control_layout.addWidget(self.clear_sel_btn)
 
+        # Train model button
+        self.train_model_btn = QPushButton("Train Model")
+        self.train_model_btn.clicked.connect(self.show_model_training)
+        control_layout.addWidget(self.train_model_btn)
+        
+        # Run prediction button
+        self.predict_btn = QPushButton("Run Prediction")
+        self.predict_btn.clicked.connect(self.show_model_prediction)
+        self.predict_btn.setEnabled(False)
+        control_layout.addWidget(self.predict_btn)
+
+        # Export dataset button
+        self.export_dataset_btn = QPushButton("Export Dataset")
+        self.export_dataset_btn.clicked.connect(self.show_export_dialog)
+        control_layout.addWidget(self.export_dataset_btn)
+
         right_layout.addLayout(control_layout)
 
         # Label controls
@@ -166,16 +180,6 @@ class PDFOCRApp(QMainWindow):
 
         self.setCentralWidget(central_widget)
 
-        self.train_model_btn = QPushButton("Train Model")
-        self.train_model_btn.clicked.connect(self.show_model_training)
-        control_layout.addWidget(self.train_model_btn)
-        
-        self.predict_btn = QPushButton("Run Prediction")
-        self.predict_btn.clicked.connect(self.show_model_prediction)
-        self.predict_btn.setEnabled(False)
-        control_layout.addWidget(self.predict_btn)
-
-
     def upload_pdf(self):
         """Upload a new PDF document"""
         options = QFileDialog.Options()
@@ -214,7 +218,7 @@ class PDFOCRApp(QMainWindow):
                     f"Error loading document: {os.path.basename(file_path)}"
                 )
 
-    def on_document_selected(self, item):
+    def on_document_selected(self, item : DocumentListItem):
         """Handle document selection from the list"""
         if not item:
             return
@@ -770,3 +774,35 @@ class PDFOCRApp(QMainWindow):
         self.update_document_info()
         
         self.status_label.setText(f"Applied {len(doc.page_boxes[doc.current_page])} labeled boxes from model predictions")
+    
+    def show_export_dialog(self):
+        """Show the dataset export dialog"""
+        if not self.documents:
+            self.status_label.setText("No documents loaded. Please upload documents first.")
+            return
+        
+        # Check if any documents have labeled boxes
+        has_labels = False
+        for doc in self.documents:
+            for page_boxes in doc.page_boxes:
+                for box in page_boxes:
+                    if box.label != "O":
+                        has_labels = True
+                        break
+                if has_labels:
+                    break
+            if has_labels:
+                break
+        
+        if not has_labels:
+            self.status_label.setText("No labeled text boxes found. Please label some boxes first.")
+            QMessageBox.warning(self, "No Labels", 
+                            "No labeled text boxes found. Please add labels to boxes before exporting.")
+            return
+        
+        # Use SimpleExportDialog instead of ExportDatasetDialog
+        dialog = SimpleExportDialog(self, self.documents)
+        dialog.exec_()
+        
+        # Update status after dialog closes
+        self.status_label.setText("Dataset export dialog closed")
