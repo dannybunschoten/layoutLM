@@ -38,7 +38,6 @@ class PDFOCRApp(QMainWindow):
     self.available_labels = ["O"]  # List of available labels
     self.text_boxes = []  # Current page's TextBox objects
     self.initUI()
-    self.load_data()
 
   def initUI(self):
     self.setWindowTitle("AI key value pair extractor")
@@ -195,67 +194,102 @@ class PDFOCRApp(QMainWindow):
   def load_data_with_dialog(self):
     """Load data with a file dialog"""
     options = QFileDialog.Options()
-    file_path, _ = QFileDialog.getOpenFileName(
-      self, "Load Data", "", "Pickle Files (*.pkl)", options=options
-    )
+    load_dir = QFileDialog.getExistingDirectory(self, "Select Directory to Load Data")
 
-    if file_path:
-      try:
-        with open(file_path, "rb") as f:
-          loaded_documents = pickle.load(f)
+    if not load_dir:
+      return
 
-        # Clear current data
-        self.documents = loaded_documents
-        self.current_document_idx = -1
-        self.selected_indices = []
-        self.text_boxes = []
+    try:
+      # Load file paths
+      file_paths_path = os.path.join(load_dir, "document_paths.pkl")
+      page_boxes_path = os.path.join(load_dir, "page_boxes.pkl")
 
-        # Clear and repopulate the document list
-        self.doc_list.clear()
-        for doc in self.documents:
-          item = DocumentListItem(doc)
-          self.doc_list.addItem(item)
+      # Check if both required files exist
+      if not (os.path.exists(file_paths_path) and os.path.exists(page_boxes_path)):
+        raise FileNotFoundError("Missing required data files in the selected directory")
 
-        self.status_label.setText(f"Data loaded from {os.path.basename(file_path)}")
+      # Load file paths and page boxes
+      with open(file_paths_path, "rb") as f:
+        file_paths = pickle.load(f)
 
-        # If documents were loaded, select the first one
-        if self.documents:
-          self.doc_list.setCurrentRow(0)
-          self.on_document_selected(self.doc_list.item(0))
+      with open(page_boxes_path, "rb") as f:
+        page_boxes_data = pickle.load(f)
 
-        QMessageBox.information(
-          self, "Success", f"Data loaded successfully from:\n{file_path}"
-        )
-      except Exception as e:
-        self.status_label.setText(f"Error loading data: {str(e)}")
-        QMessageBox.critical(self, "Error", f"Failed to load data:\n{str(e)}")
+      # Clear current data
+      self.documents = []
+      self.current_document_idx = -1
+      self.selected_indices = []
+      self.text_boxes = []
+      self.doc_list.clear()
+
+      # Create new document objects
+      for i, file_path in enumerate(file_paths):
+        # Check if the file exists
+        if not os.path.exists(file_path):
+          QMessageBox.warning(
+            self,
+            "Missing File",
+            f"File not found: {file_path}\nSkipping this document.",
+          )
+          continue
+
+        # Create document from file
+        document = Document(file_path)
+
+        # Add corresponding page boxes if available
+        if i < len(page_boxes_data):
+          document.page_boxes = page_boxes_data[i]
+
+        # Add document to list
+        self.documents.append(document)
+
+        # Add to document list widget
+        item = DocumentListItem(document)
+        self.doc_list.addItem(item)
+
+      self.status_label.setText(f"Data loaded from {load_dir}")
+
+      # If documents were loaded, select the first one
+      if self.documents:
+        self.doc_list.setCurrentRow(0)
+        self.on_document_selected(self.doc_list.item(0))
+
+      QMessageBox.information(
+        self, "Success", f"Loaded {len(self.documents)} documents"
+      )
+    except Exception as e:
+      self.status_label.setText(f"Error loading data: {str(e)}")
+      QMessageBox.critical(self, "Error", f"Failed to load data:\n{str(e)}")
 
   def save_data_with_dialog(self):
     """Save data with a file dialog"""
     options = QFileDialog.Options()
-    file_path, _ = QFileDialog.getSaveFileName(
-      self, "Save Data", "", "Pickle Files (*.pkl)", options=options
-    )
+    save_dir = QFileDialog.getExistingDirectory(self, "Select Directory to Save Data")
 
-    if file_path:
-      # Ensure the file has .pkl extension
-      if not file_path.endswith(".pkl"):
-        file_path += ".pkl"
+    if not save_dir:
+      return
 
-      try:
-        # Make sure directory exists
-        os.makedirs(os.path.dirname(file_path) or ".", exist_ok=True)
+    try:
+      # Create directory if it doesn't exist
+      os.makedirs(save_dir, exist_ok=True)
 
-        with open(file_path, "wb") as f:
-          pickle.dump(self.documents, f)
+      # Save file paths
+      file_paths = [doc.file_path for doc in self.documents]
+      with open(os.path.join(save_dir, "document_paths.pkl"), "wb") as f:
+        pickle.dump(file_paths, f)
 
-        self.status_label.setText(f"Data saved to {os.path.basename(file_path)}")
-        QMessageBox.information(
-          self, "Success", f"Data saved successfully to:\n{file_path}"
-        )
-      except Exception as e:
-        self.status_label.setText(f"Error saving data: {str(e)}")
-        QMessageBox.critical(self, "Error", f"Failed to save data:\n{str(e)}")
+      # Save page boxes separately
+      page_boxes_data = [doc.page_boxes for doc in self.documents]
+      with open(os.path.join(save_dir, "page_boxes.pkl"), "wb") as f:
+        pickle.dump(page_boxes_data, f)
+
+      self.status_label.setText(f"Data saved to {save_dir}")
+      QMessageBox.information(
+        self, "Success", f"Data saved successfully to:\n{save_dir}"
+      )
+    except Exception as e:
+      self.status_label.setText(f"Error saving data: {str(e)}")
+      QMessageBox.critical(self, "Error", f"Failed to save data:\n{str(e)}")
 
   def upload_pdf(self):
     """Upload a new PDF document"""
