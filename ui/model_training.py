@@ -183,7 +183,7 @@ class ModelTrainingDialog(QDialog):
 
     # Validation split
     val_layout = QHBoxLayout()
-    self.use_val_check = QCheckBox("Use validation split (25%)")
+    self.use_val_check = QCheckBox("Use validation split (20%)")
     self.use_val_check.setChecked(True)
     val_layout.addWidget(self.use_val_check)
     model_layout.addLayout(val_layout)

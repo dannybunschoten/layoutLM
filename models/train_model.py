@@ -36,40 +36,59 @@ class ModelTrainer:
     os.makedirs(output_dir, exist_ok=True)
 
   def prepare_dataset_from_documents(self, documents: List[Document]):
-    """Convert Document objects to a dataset format for training"""
+    """Convert Document objects to a dataset format for training with BIO NER tags"""
     train_examples: List[datasetClass] = []
-
     label2id: Dict[str, int] = {}
+    # Add "O" tag by default
+    label2id["O"] = 0
 
     for doc in documents:
       for page_idx, boxes in enumerate(doc.page_boxes):
         if not boxes:
           continue
-
         image = doc.images[page_idx]
         img_width, img_height = image.size
-
         tokens: List[str] = []
         bboxes: List[Tuple[int, int, int, int]] = []
         ner_tags: List[int] = []
 
+        # Track previous entity to determine B- vs I- prefixes
+        prev_label = None
+
         for box in boxes:
           if box.text.strip():
             tokens.append(box.text)
-
             x1, y1, x2, y2 = box.x1, box.y1, box.x2, box.y2
-
             bbox = (
               int(x1 / img_width * 1000),
               int(y1 / img_height * 1000),
               int(x2 / img_width * 1000),
               int(y2 / img_height * 1000),
             )
-
             bboxes.append(bbox)
-            if box.label not in label2id:
-              label2id[box.label] = len(label2id)
-            ner_tags.append(label2id[box.label])
+
+            # Handle boxes that already have "O" label or other labels
+            if box.label == "O":
+              # Already has "O" label, use it directly
+              ner_tags.append(label2id["O"])
+              prev_label = None
+            elif box.label:
+              # For non-O labels, apply BIO scheme
+              if box.label != prev_label:
+                bio_label = f"B-{box.label}"
+                if bio_label not in label2id:
+                  label2id[bio_label] = len(label2id)
+                ner_tags.append(label2id[bio_label])
+              else:
+                bio_label = f"I-{box.label}"
+                if bio_label not in label2id:
+                  label2id[bio_label] = len(label2id)
+                ner_tags.append(label2id[bio_label])
+              prev_label = box.label
+            else:
+              # No label provided, default to "O"
+              ner_tags.append(label2id["O"])
+              prev_label = None
 
         # Only add examples with content
         if tokens:
@@ -86,20 +105,22 @@ class ModelTrainer:
     if not train_examples:
       raise ValueError("No valid examples found in the provided documents")
 
-    return (train_examples, label2id)
+    # Convert numerical labels to BIO strings for better interpretability
+    id2label = {v: k for k, v in label2id.items()}
+
+    return (train_examples, label2id, id2label)
 
   def train(
     self,
     documents: List[Document],
-    val_split: float = 0.25,
+    val_split: float = 0.20,
     model_name: str = "microsoft/layoutlmv3-base",
     batch_size: int = 2,
     learning_rate: float = 1e-5,
     epochs: int = 3,
   ):
     """Train the model on document data"""
-    examples, label2id = self.prepare_dataset_from_documents(documents)
-    id2label = {v: k for k, v in label2id.items()}
+    examples, label2id, id2label = self.prepare_dataset_from_documents(documents)
     label_list = list(id2label.values())
 
     processor: AutoProcessor = AutoProcessor.from_pretrained(  # type: ignore
@@ -258,6 +279,7 @@ class ModelTrainer:
 
     # Get the page image
     image = document.images[page_idx]
+    print(image)
 
     # Extract text boxes if available
     if document.page_boxes[page_idx]:
@@ -287,7 +309,7 @@ class ModelTrainer:
         return_offsets_mapping=True,
       )
       offset_mapping = encoding.pop("offset_mapping")
-      word_ids = offset_mapping.word_ids()
+      word_ids = encoding.word_ids()
     else:
       print("No text boxes found for this page, using OCR results")
       return []
@@ -296,34 +318,43 @@ class ModelTrainer:
     with torch.no_grad():
       outputs = self.model(**encoding)
 
-    # Process predictions
     logits = outputs.logits
     predictions = logits.argmax(-1).squeeze().tolist()
 
-    # Map predictions back to words
-    results = []
-    word_to_prediction = {}
-
+    word_to_label = {}
     for idx, word_id in enumerate(word_ids):
-      if word_id is not None:
-        # Only consider first token of each word
-        if idx == 0 or word_ids[idx - 1] != word_id:
-          label_id = predictions[idx]
-          label = self.id2label.get(label_id, "O")
-          word_to_prediction[word_id] = label
+      if word_id is None:
+        continue
+      if idx == 0 or word_ids[idx] != word_ids[idx - 1]:
+        predicted_label = self.model.config.id2label[predictions[idx]]
+        word_to_label[word_id] = predicted_label
 
-    # Format results
-    if document.page_boxes[page_idx]:
-      # Use existing text boxes
-      for i, box in enumerate(document.page_boxes[page_idx]):
-        if i in word_to_prediction:
-          results.append(
-            {
-              "text": box.text,
-              "box": [box.x, box.y, box.w, box.h],
-              "label": word_to_prediction[i],
-            }
-          )
+    predicted_word_labels = [
+      (tokens[i], word_to_label.get(i, "O")) for i in range(len(tokens))
+    ]
+    print(predicted_word_labels)
+
+    for word, pred in predicted_word_labels:
+      if pred == "O":
+        continue
+
+    def iob_to_label(label: str) -> str:
+      parts = label.split("-", maxsplit=1)
+      return parts[1].lower() if len(parts) == 2 else "other"
+
+    results = []
+
+    for word_idx, (word, pred_label) in enumerate(predicted_word_labels):
+      if pred_label == "O":
+        continue
+      entity = iob_to_label(pred_label)
+      results.append(
+        {
+          "word": word,
+          "box": bboxes[word_idx],
+          "label": entity,
+        }
+      )
 
     return results
 
@@ -332,6 +363,7 @@ class ModelTrainer:
     try:
       # Load processor and model
       self.model = AutoModelForTokenClassification.from_pretrained(model_dir)  # type: ignore
+      self.processor = AutoProcessor.from_pretrained(model_dir)  # type: ignore
 
       # Get label mappings
       label_path = os.path.join(model_dir, "label_mappings.json")

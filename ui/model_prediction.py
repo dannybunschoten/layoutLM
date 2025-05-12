@@ -36,8 +36,56 @@ class PredictionWorker(QThread):
         True, "Predictions completed successfully!", predictions
       )
     except Exception as e:
-      self.progress_update.emit(f"Error during prediction: {str(e)}")
-      self.finished_signal.emit(False, f"Prediction failed: {str(e)}", [])
+      import traceback
+      import sys
+
+      # Get detailed exception info
+      error_type = type(e).__name__
+      error_message = str(e)
+      error_traceback = traceback.format_exc()
+
+      # Get information about local variables at the time of the exception
+      frame = sys.exc_info()[2].tb_frame
+      local_vars = {key: repr(value) for key, value in frame.f_locals.items()}
+
+      # Get system information
+      import platform
+
+      system_info = {
+        "python_version": sys.version,
+        "platform": platform.platform(),
+        "architecture": platform.architecture(),
+      }
+
+      # Format the detailed error message
+      error_details = (
+        f"===== ERROR DETAILS =====\n"
+        f"Error Type: {error_type}\n"
+        f"Error Message: {error_message}\n\n"
+        f"===== TRACEBACK =====\n{error_traceback}\n\n"
+        f"===== LOCAL VARIABLES =====\n"
+      )
+
+      # Add local variables to error details
+      for var_name, var_value in local_vars.items():
+        # Skip large objects or private variables
+        if len(var_value) < 1000 and not var_name.startswith("_"):
+          error_details += f"{var_name} = {var_value}\n"
+
+      error_details += f"\n===== SYSTEM INFO =====\n"
+      for key, value in system_info.items():
+        error_details += f"{key}: {value}\n"
+
+      # Log to console as well
+      print(error_details)
+
+      # Emit signals with detailed information
+      self.progress_update.emit(
+        f"Error during prediction: {error_message}\n\nDetails:\n{error_details}"
+      )
+      self.finished_signal.emit(
+        False, f"Prediction failed: {error_type} - {error_message}", []
+      )
 
 
 class ModelPredictionDialog(QDialog):

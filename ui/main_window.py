@@ -193,7 +193,6 @@ class PDFOCRApp(QMainWindow):
 
   def load_data_with_dialog(self):
     """Load data with a file dialog"""
-    options = QFileDialog.Options()
     load_dir = QFileDialog.getExistingDirectory(self, "Select Directory to Load Data")
 
     if not load_dir:
@@ -219,6 +218,7 @@ class PDFOCRApp(QMainWindow):
       self.documents = []
       self.current_document_idx = -1
       self.selected_indices = []
+      self.available_labels = ["O"]
       self.text_boxes = []
       self.doc_list.clear()
 
@@ -251,6 +251,17 @@ class PDFOCRApp(QMainWindow):
 
       # If documents were loaded, select the first one
       if self.documents:
+        self.available_labels = list(
+          {"O"}
+          | set(
+            box.label
+            for doc in self.documents
+            for page_boxes in doc.page_boxes
+            for box in page_boxes
+          )
+        )
+        self.label_selector.clear()
+        self.label_selector.addItems(self.available_labels)
         self.doc_list.setCurrentRow(0)
         self.on_document_selected(self.doc_list.item(0))
 
@@ -728,6 +739,11 @@ class PDFOCRApp(QMainWindow):
 
   def apply_label_to_selection(self):
     """Apply the selected label to the currently selected box"""
+    print(f"Applying label to selection: {self.selected_indices}")
+    print(f"Current document index: {self.current_document_idx}")
+    print(f"Available labels: {self.available_labels}")
+    print(f"Label selector index: {self.label_selector.currentIndex()}")
+    print(f"Label selector text: {self.label_selector.currentText()}")
     if len(self.selected_indices) != 1 or self.current_document_idx < 0:
       return
 
@@ -846,7 +862,7 @@ class PDFOCRApp(QMainWindow):
 
         # Create a new text box
         text_box = TextBox(
-          x=x1, y=y1, w=x2 - x1, h=y2 - y1, words=[item["word"]], label=label
+          x1=x1, y1=y1, x2=x2, y2=y2, words=[item["word"]], label=label
         )
 
         # Add the box to the document
